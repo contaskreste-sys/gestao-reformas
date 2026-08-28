@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Plus,
   Receipt,
+  Trash2,
 } from "lucide-react";
 import {
   useObraRealtime,
@@ -24,16 +25,10 @@ import {
   criarOrcamento,
   registrarCusto,
   adicionarEtapa,
+  excluirEtapa,
+  excluirCusto,
   supabase,
 } from "./supabase-obras";
-
-const CATEGORIAS_CUSTO = [
-  { valor: "material", label: "Material" },
-  { valor: "mao_de_obra", label: "Mão de obra" },
-  { valor: "equipamento", label: "Equipamentos" },
-  { valor: "imprevisto", label: "Imprevistos" },
-  { valor: "outro", label: "Outro" },
-];
 
 function formatBRL(v) {
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
@@ -43,7 +38,7 @@ function formatBRL(v) {
 // Barra "trena" — agora dirigida pelos dados reais (obra.progresso_percent
 // e etapas.percentual vindos do useObraRealtime)
 // ---------------------------------------------------------------------------
-function TrenaProgresso({ percent, etapas, onEditarEtapa, onAdicionarEtapa, adicionando }) {
+function TrenaProgresso({ percent, etapas, onEditarEtapa, onExcluirEtapa, onAdicionarEtapa, adicionando }) {
   const ticks = Array.from({ length: 21 }, (_, i) => i * 5);
   const etapaAtual = etapas.find((e) => e.percentual > 0 && e.percentual < 100) ?? etapas[0];
 
@@ -93,26 +88,37 @@ function TrenaProgresso({ percent, etapas, onEditarEtapa, onAdicionarEtapa, adic
       {/* Etapas — clique para atualizar o percentual (grava no Supabase) */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
         {etapas.map((e) => (
-          <button
-            key={e.id}
-            onClick={() => onEditarEtapa(e)}
-            className="text-left bg-[#211F1A] border border-[#3A372E] rounded-md px-3 py-2 hover:border-[#F5B400]/50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F5B400]/50"
-          >
-            <div className="flex items-center gap-1.5 mb-1.5">
-              {e.percentual === 100 ? (
-                <CheckCircle2 size={13} className="text-[#4A7C59] shrink-0" />
-              ) : (
-                <Clock3 size={13} className="text-[#F5B400] shrink-0" />
-              )}
-              <span className="text-[11px] text-[#EDEAE3]/80 leading-tight">{e.nome}</span>
-            </div>
-            <div className="h-1 rounded-full bg-[#161510] overflow-hidden">
-              <div
-                className={`h-full rounded-full ${e.percentual === 100 ? "bg-[#4A7C59]" : "bg-[#F5B400]"}`}
-                style={{ width: `${e.percentual}%` }}
-              />
-            </div>
-          </button>
+          <div key={e.id} className="relative group">
+            <button
+              onClick={() => onEditarEtapa(e)}
+              className="w-full text-left bg-[#211F1A] border border-[#3A372E] rounded-md px-3 py-2 hover:border-[#F5B400]/50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F5B400]/50"
+            >
+              <div className="flex items-center gap-1.5 mb-1.5">
+                {e.percentual === 100 ? (
+                  <CheckCircle2 size={13} className="text-[#4A7C59] shrink-0" />
+                ) : (
+                  <Clock3 size={13} className="text-[#F5B400] shrink-0" />
+                )}
+                <span className="text-[11px] text-[#EDEAE3]/80 leading-tight pr-3">{e.nome}</span>
+              </div>
+              <div className="h-1 rounded-full bg-[#161510] overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${e.percentual === 100 ? "bg-[#4A7C59]" : "bg-[#F5B400]"}`}
+                  style={{ width: `${e.percentual}%` }}
+                />
+              </div>
+            </button>
+            <button
+              onClick={(ev) => {
+                ev.stopPropagation();
+                if (window.confirm(`Excluir a etapa "${e.nome}"?`)) onExcluirEtapa(e.id);
+              }}
+              className="absolute top-1.5 right-1.5 text-[#8B8578] hover:text-[#F0793D] opacity-0 group-hover:opacity-100 transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F5B400]/50 rounded"
+              aria-label={`Excluir etapa ${e.nome}`}
+            >
+              <X size={13} />
+            </button>
+          </div>
         ))}
         <button
           onClick={onAdicionarEtapa}
@@ -241,13 +247,12 @@ function ResumoFinanceiro({ obraId }) {
 
   const [criandoOrcamento, setCriandoOrcamento] = useState(false);
   const [salvandoOrcamento, setSalvandoOrcamento] = useState(false);
-  const [valoresOrcamento, setValoresOrcamento] = useState(
-    Object.fromEntries(CATEGORIAS_CUSTO.map((c) => [c.valor, ""]))
-  );
+  const [linhasOrcamento, setLinhasOrcamento] = useState([{ nome: "", valor: "" }]);
 
   const [mostrarNovoGasto, setMostrarNovoGasto] = useState(false);
-  const [novoGasto, setNovoGasto] = useState({ categoria: "material", descricao: "", valor: "" });
+  const [novoGasto, setNovoGasto] = useState({ nome: "", valor: "" });
   const [salvandoGasto, setSalvandoGasto] = useState(false);
+  const [excluindoId, setExcluindoId] = useState(null);
 
   async function carregarTudo() {
     setCarregando(true);
@@ -268,7 +273,11 @@ function ResumoFinanceiro({ obraId }) {
       itensData = data ?? [];
     }
 
-    const { data: custosData } = await supabase.from("custos").select("*").eq("obra_id", obraId);
+    const { data: custosData } = await supabase
+      .from("custos")
+      .select("*")
+      .eq("obra_id", obraId)
+      .order("criado_em", { ascending: false });
 
     setOrcamento(orcamentoData);
     setItens(itensData);
@@ -280,17 +289,33 @@ function ResumoFinanceiro({ obraId }) {
     carregarTudo();
   }, [obraId]);
 
+  function atualizarLinha(idx, campo, valor) {
+    setLinhasOrcamento((prev) => prev.map((l, i) => (i === idx ? { ...l, [campo]: valor } : l)));
+  }
+  function removerLinha(idx) {
+    setLinhasOrcamento((prev) => prev.filter((_, i) => i !== idx));
+  }
+  function adicionarLinha() {
+    setLinhasOrcamento((prev) => [...prev, { nome: "", valor: "" }]);
+  }
+
   async function handleSalvarOrcamento() {
+    const linhasValidas = linhasOrcamento.filter((l) => l.nome.trim() && Number(l.valor) > 0);
+    if (linhasValidas.length === 0) {
+      setErro("Adicione pelo menos um item com nome e valor.");
+      return;
+    }
     setSalvandoOrcamento(true);
     setErro(null);
     try {
-      const itensParaSalvar = CATEGORIAS_CUSTO.map((c) => ({
-        categoria: c.valor,
-        descricao: c.label,
-        valor: valoresOrcamento[c.valor],
+      const itensParaSalvar = linhasValidas.map((l) => ({
+        categoria: l.nome.trim(),
+        descricao: l.nome.trim(),
+        valor: l.valor,
       }));
       await criarOrcamento(obraId, itensParaSalvar);
       setCriandoOrcamento(false);
+      setLinhasOrcamento([{ nome: "", valor: "" }]);
       await carregarTudo();
     } catch (err) {
       setErro(err.message);
@@ -300,8 +325,8 @@ function ResumoFinanceiro({ obraId }) {
   }
 
   async function handleRegistrarGasto() {
-    if (!novoGasto.valor || Number(novoGasto.valor) <= 0) {
-      setErro("Informe um valor válido pro gasto.");
+    if (!novoGasto.nome.trim() || !novoGasto.valor || Number(novoGasto.valor) <= 0) {
+      setErro("Informe um nome e um valor válido pro gasto.");
       return;
     }
     setSalvandoGasto(true);
@@ -309,17 +334,30 @@ function ResumoFinanceiro({ obraId }) {
     try {
       await registrarCusto({
         obraId,
-        categoria: novoGasto.categoria,
-        descricao: novoGasto.descricao || null,
+        categoria: novoGasto.nome.trim(),
+        descricao: novoGasto.nome.trim(),
         valor: novoGasto.valor,
       });
-      setNovoGasto({ categoria: "material", descricao: "", valor: "" });
+      setNovoGasto({ nome: "", valor: "" });
       setMostrarNovoGasto(false);
       await carregarTudo();
     } catch (err) {
       setErro(err.message);
     } finally {
       setSalvandoGasto(false);
+    }
+  }
+
+  async function handleExcluirGasto(id) {
+    if (!window.confirm("Excluir esse gasto?")) return;
+    setExcluindoId(id);
+    try {
+      await excluirCusto(id);
+      await carregarTudo();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setExcluindoId(null);
     }
   }
 
@@ -331,7 +369,7 @@ function ResumoFinanceiro({ obraId }) {
     );
   }
 
-  // ---- Sem orçamento ainda: mostra o formulário de criação ----
+  // ---- Sem orçamento ainda: mostra o botão de criar ----
   if (!orcamento && !criandoOrcamento) {
     return (
       <div className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 h-full flex flex-col items-center justify-center text-center gap-3">
@@ -347,6 +385,7 @@ function ResumoFinanceiro({ obraId }) {
     );
   }
 
+  // ---- Formulário de criação com linhas de nome livre ----
   if (criandoOrcamento) {
     return (
       <div className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 h-full">
@@ -354,24 +393,41 @@ function ResumoFinanceiro({ obraId }) {
           <h2 className="font-[Oswald] text-lg text-[#EDEAE3]">Novo orçamento</h2>
           <DollarSign size={18} className="text-[#F5B400]" />
         </div>
-        <div className="space-y-3 mb-4">
-          {CATEGORIAS_CUSTO.map((c) => (
-            <div key={c.valor}>
-              <label className="block text-[11px] text-[#8B8578] mb-1">{c.label}</label>
+        <div className="space-y-2 mb-3 max-h-72 overflow-y-auto pr-1">
+          {linhasOrcamento.map((linha, idx) => (
+            <div key={idx} className="flex gap-2 items-center">
+              <input
+                type="text"
+                value={linha.nome}
+                onChange={(e) => atualizarLinha(idx, "nome", e.target.value)}
+                placeholder="Nome do item (ex: Piso porcelanato)"
+                className="flex-1 bg-[#161510] border border-[#3A372E] rounded-md px-3 py-2 text-xs text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+              />
               <input
                 type="number"
                 min="0"
                 step="0.01"
-                value={valoresOrcamento[c.valor]}
-                onChange={(e) =>
-                  setValoresOrcamento((prev) => ({ ...prev, [c.valor]: e.target.value }))
-                }
-                placeholder="0,00"
-                className="w-full bg-[#161510] border border-[#3A372E] rounded-md px-3 py-2 text-sm text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+                value={linha.valor}
+                onChange={(e) => atualizarLinha(idx, "valor", e.target.value)}
+                placeholder="R$"
+                className="w-24 bg-[#161510] border border-[#3A372E] rounded-md px-2 py-2 text-xs text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
               />
+              <button
+                onClick={() => removerLinha(idx)}
+                className="text-[#8B8578] hover:text-[#F0793D] shrink-0"
+                aria-label="Remover item"
+              >
+                <X size={15} />
+              </button>
             </div>
           ))}
         </div>
+        <button
+          onClick={adicionarLinha}
+          className="flex items-center gap-1.5 text-xs text-[#8B8578] hover:text-[#F5B400] mb-4 transition-colors"
+        >
+          <Plus size={13} /> Adicionar item
+        </button>
         {erro && (
           <p className="flex items-center gap-1.5 text-xs text-[#F0793D] mb-3">
             <AlertTriangle size={13} /> {erro}
@@ -379,7 +435,7 @@ function ResumoFinanceiro({ obraId }) {
         )}
         <div className="flex gap-2">
           <button
-            onClick={() => setCriandoOrcamento(false)}
+            onClick={() => { setCriandoOrcamento(false); setErro(null); }}
             className="flex-1 text-sm text-[#8B8578] hover:text-[#EDEAE3] py-2 transition-colors"
           >
             Cancelar
@@ -396,21 +452,28 @@ function ResumoFinanceiro({ obraId }) {
     );
   }
 
-  // ---- Com orçamento: mostra o resumo real ----
+  // ---- Com orçamento: resumo real, agrupado por nome (ignorando maiúsculas) ----
   const totalOrcado = itens.reduce((soma, i) => soma + i.quantidade * i.valor_unitario, 0);
   const totalGasto = custos.reduce((soma, c) => soma + Number(c.valor), 0);
   const saldo = totalOrcado - totalGasto;
   const percentGasto = totalOrcado > 0 ? Math.round((totalGasto / totalOrcado) * 100) : 0;
 
-  const porCategoria = CATEGORIAS_CUSTO.map((c) => {
-    const orcadoCat = itens
-      .filter((i) => i.categoria === c.valor)
-      .reduce((s, i) => s + i.quantidade * i.valor_unitario, 0);
-    const gastoCat = custos
-      .filter((cu) => cu.categoria === c.valor)
-      .reduce((s, cu) => s + Number(cu.valor), 0);
-    return { ...c, orcado: orcadoCat, gasto: gastoCat };
-  }).filter((c) => c.orcado > 0 || c.gasto > 0);
+  const chaves = new Set([
+    ...itens.map((i) => (i.categoria || i.descricao || "").trim().toLowerCase()),
+    ...custos.map((c) => (c.categoria || c.descricao || "").trim().toLowerCase()),
+  ]);
+  const porNome = [...chaves]
+    .filter(Boolean)
+    .map((chave) => {
+      const itemOrig = itens.find((i) => (i.categoria || i.descricao || "").trim().toLowerCase() === chave);
+      const orcadoNome = itens
+        .filter((i) => (i.categoria || i.descricao || "").trim().toLowerCase() === chave)
+        .reduce((s, i) => s + i.quantidade * i.valor_unitario, 0);
+      const gastoNome = custos
+        .filter((c) => (c.categoria || c.descricao || "").trim().toLowerCase() === chave)
+        .reduce((s, c) => s + Number(c.valor), 0);
+      return { nome: itemOrig?.categoria || itemOrig?.descricao || chave, orcado: orcadoNome, gasto: gastoNome };
+    });
 
   return (
     <div className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 h-full flex flex-col">
@@ -447,17 +510,17 @@ function ResumoFinanceiro({ obraId }) {
         </span>
       </div>
 
-      <div className="space-y-3.5 flex-1">
-        {porCategoria.length === 0 && (
-          <p className="text-xs text-[#8B8578] text-center py-4">Nenhum gasto lançado ainda.</p>
+      <div className="space-y-3.5">
+        {porNome.length === 0 && (
+          <p className="text-xs text-[#8B8578] text-center py-2">Nenhum item ainda.</p>
         )}
-        {porCategoria.map((c) => {
+        {porNome.map((c) => {
           const pct = c.orcado > 0 ? Math.min(Math.round((c.gasto / c.orcado) * 100), 100) : 100;
           const estourou = c.gasto > c.orcado;
           return (
-            <div key={c.valor}>
+            <div key={c.nome}>
               <div className="flex justify-between items-baseline mb-1">
-                <span className="text-xs text-[#EDEAE3]/80">{c.label}</span>
+                <span className="text-xs text-[#EDEAE3]/80">{c.nome}</span>
                 <span className={`text-[11px] font-[JetBrains_Mono] ${estourou ? "text-[#F0793D]" : "text-[#8B8578]"}`}>
                   {formatBRL(c.gasto)} / {formatBRL(c.orcado)}
                 </span>
@@ -470,22 +533,38 @@ function ResumoFinanceiro({ obraId }) {
         })}
       </div>
 
+      {/* Lista de lançamentos individuais, com exclusão */}
+      {custos.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-[#3A372E]">
+          <p className="text-[10px] uppercase tracking-wide text-[#8B8578] mb-2">Lançamentos</p>
+          <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+            {custos.map((c) => (
+              <div key={c.id} className="flex items-center justify-between group text-xs">
+                <span className="text-[#EDEAE3]/80 truncate pr-2">{c.descricao || c.categoria}</span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="font-[JetBrains_Mono] text-[#8B8578]">{formatBRL(Number(c.valor))}</span>
+                  <button
+                    onClick={() => handleExcluirGasto(c.id)}
+                    disabled={excluindoId === c.id}
+                    className="text-[#8B8578] hover:text-[#F0793D] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40"
+                    aria-label="Excluir gasto"
+                  >
+                    {excluindoId === c.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {mostrarNovoGasto ? (
         <div className="mt-4 pt-4 border-t border-[#3A372E] space-y-2">
-          <select
-            value={novoGasto.categoria}
-            onChange={(e) => setNovoGasto((p) => ({ ...p, categoria: e.target.value }))}
-            className="w-full bg-[#161510] border border-[#3A372E] rounded-md px-3 py-2 text-xs text-[#EDEAE3] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
-          >
-            {CATEGORIAS_CUSTO.map((c) => (
-              <option key={c.valor} value={c.valor}>{c.label}</option>
-            ))}
-          </select>
           <input
             type="text"
-            value={novoGasto.descricao}
-            onChange={(e) => setNovoGasto((p) => ({ ...p, descricao: e.target.value }))}
-            placeholder="Descrição (opcional)"
+            value={novoGasto.nome}
+            onChange={(e) => setNovoGasto((p) => ({ ...p, nome: e.target.value }))}
+            placeholder="Nome do gasto (ex: Cimento 50kg)"
             className="w-full bg-[#161510] border border-[#3A372E] rounded-md px-3 py-2 text-xs text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
           />
           <input
@@ -503,7 +582,7 @@ function ResumoFinanceiro({ obraId }) {
             </p>
           )}
           <div className="flex gap-2">
-            <button onClick={() => setMostrarNovoGasto(false)} className="flex-1 text-xs text-[#8B8578] py-2">
+            <button onClick={() => { setMostrarNovoGasto(false); setErro(null); }} className="flex-1 text-xs text-[#8B8578] py-2">
               Cancelar
             </button>
             <button
@@ -585,6 +664,15 @@ export default function DashboardMestreObras({ obraId, usuarioId }) {
   const [salvandoEtapa, setSalvandoEtapa] = useState(false);
   const [salvandoStatus, setSalvandoStatus] = useState(false);
   const [adicionandoEtapa, setAdicionandoEtapa] = useState(false);
+
+  async function handleExcluirEtapa(etapaId) {
+    try {
+      await excluirEtapa(etapaId);
+      // realtime cuida de remover da lista sozinho
+    } catch (err) {
+      alert(err.message);
+    }
+  }
 
   async function handleAdicionarEtapa() {
     const nome = window.prompt("Nome da nova etapa (ex: Instalação de pisos):");
@@ -689,6 +777,7 @@ export default function DashboardMestreObras({ obraId, usuarioId }) {
             percent={obra.progresso_percent}
             etapas={etapas}
             onEditarEtapa={handleEditarEtapa}
+            onExcluirEtapa={handleExcluirEtapa}
             onAdicionarEtapa={handleAdicionarEtapa}
             adicionando={adicionandoEtapa}
           />
