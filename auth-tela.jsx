@@ -1,18 +1,18 @@
 import { useState } from "react";
-import { HardHat, Mail, Lock, User, Loader2, AlertTriangle, Building2, Home } from "lucide-react";
+import { HardHat, Mail, Lock, User, Loader2, AlertTriangle } from "lucide-react";
 import { supabase } from "./supabase-obras";
 
 // ---------------------------------------------------------------------------
-// Tela de autenticação. Chama onAutenticado(usuario) quando o login (ou o
-// cadastro) termina com sucesso — o app que decide pra onde navegar a
-// partir do campo `usuario.tipo` ('empreiteiro' | 'cliente' | 'equipe').
+// Tela de autenticação. Só empreiteiros se cadastram por aqui — contas de
+// cliente são criadas pelo empreiteiro na hora de cadastrar a obra (tela
+// NovaObra), com e-mail e senha definidos por ele. Chama onAutenticado(usuario)
+// quando o login (ou cadastro) termina com sucesso.
 // ---------------------------------------------------------------------------
 export default function AuthTela({ onAutenticado }) {
   const [modo, setModo] = useState("login"); // "login" | "cadastro"
   const [nome, setNome] = useState("");
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
-  const [tipo, setTipo] = useState("cliente");
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState(null);
   const [avisoConfirmacao, setAvisoConfirmacao] = useState(false);
@@ -53,14 +53,12 @@ export default function AuthTela({ onAutenticado }) {
         email,
         password: senha,
         options: {
-          data: { nome, tipo },
+          data: { nome, tipo: "empreiteiro" },
           emailRedirectTo: window.location.origin,
         },
       });
       if (error) throw error;
 
-      // Se a confirmação de e-mail estiver ligada no projeto, não há sessão
-      // ainda — avisa a pessoa pra checar a caixa de entrada.
       if (!data.session) {
         setAvisoConfirmacao(true);
         return;
@@ -122,6 +120,14 @@ export default function AuthTela({ onAutenticado }) {
               </button>
             </div>
 
+            {modo === "cadastro" && (
+              <p className="text-[11px] text-[#8B8578] mb-4 -mt-2">
+                O cadastro aqui é só para <span className="text-[#EDEAE3] font-medium">empreiteiros</span>.
+                Se você é cliente, peça pro seu empreiteiro cadastrar a obra — o acesso é criado
+                automaticamente com e-mail e senha que ele definir.
+              </p>
+            )}
+
             {avisoConfirmacao ? (
               <div className="text-center py-4">
                 <Mail size={28} className="text-[#F5B400] mx-auto mb-3" />
@@ -134,55 +140,17 @@ export default function AuthTela({ onAutenticado }) {
             ) : (
               <form onSubmit={modo === "login" ? handleLogin : handleCadastro} className="space-y-3">
                 {modo === "cadastro" && (
-                  <>
-                    {/* Tipo de usuário */}
-                    <div className="grid grid-cols-2 gap-2 mb-1">
-                      <button
-                        type="button"
-                        onClick={() => setTipo("cliente")}
-                        className={`flex flex-col items-center gap-1.5 rounded-md border py-3 transition-colors ${
-                          tipo === "cliente"
-                            ? "border-[#F5B400] bg-[#F5B400]/10"
-                            : "border-[#3A372E] bg-[#161510]"
-                        }`}
-                      >
-                        <Home size={18} className={tipo === "cliente" ? "text-[#F5B400]" : "text-[#8B8578]"} />
-                        <span className={`text-xs font-medium ${tipo === "cliente" ? "text-[#EDEAE3]" : "text-[#8B8578]"}`}>
-                          Sou cliente
-                        </span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setTipo("empreiteiro")}
-                        className={`flex flex-col items-center gap-1.5 rounded-md border py-3 transition-colors ${
-                          tipo === "empreiteiro"
-                            ? "border-[#F5B400] bg-[#F5B400]/10"
-                            : "border-[#3A372E] bg-[#161510]"
-                        }`}
-                      >
-                        <Building2 size={18} className={tipo === "empreiteiro" ? "text-[#F5B400]" : "text-[#8B8578]"} />
-                        <span className={`text-xs font-medium ${tipo === "empreiteiro" ? "text-[#EDEAE3]" : "text-[#8B8578]"}`}>
-                          Sou empreiteiro
-                        </span>
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-[#8B8578] pb-1">
-                      Membros de equipe (mestre de obras, pedreiros) são convidados pelo empreiteiro dentro de uma obra — não se cadastram por aqui.
-                    </p>
-
-                    {/* Nome */}
-                    <div className="relative">
-                      <User size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8B8578]" />
-                      <input
-                        type="text"
-                        required
-                        value={nome}
-                        onChange={(e) => setNome(e.target.value)}
-                        placeholder="Nome completo"
-                        className="w-full bg-[#161510] border border-[#3A372E] rounded-md pl-9 pr-3 py-2.5 text-sm text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
-                      />
-                    </div>
-                  </>
+                  <div className="relative">
+                    <User size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8B8578]" />
+                    <input
+                      type="text"
+                      required
+                      value={nome}
+                      onChange={(e) => setNome(e.target.value)}
+                      placeholder="Nome completo"
+                      className="w-full bg-[#161510] border border-[#3A372E] rounded-md pl-9 pr-3 py-2.5 text-sm text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+                    />
+                  </div>
                 )}
 
                 {/* E-mail */}
