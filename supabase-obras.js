@@ -100,7 +100,86 @@ export async function atualizarStatusObra(obraId, novoStatus) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Hook de tempo real — use no dashboard do CLIENTE (e do empreiteiro)
+// 5. Criar (ou recriar) o orçamento de uma obra — sempre como uma nova
+//    versão, com os itens por categoria. O cliente aprova depois via
+//    aprovar_orcamento() (função do banco).
+// ---------------------------------------------------------------------------
+export async function criarOrcamento(obraId, itens) {
+  // itens: [{ categoria, descricao, valor }]
+  const valorTotal = itens.reduce((soma, i) => soma + Number(i.valor || 0), 0);
+
+  const { data: ultimaVersao } = await supabase
+    .from("orcamentos")
+    .select("versao")
+    .eq("obra_id", obraId)
+    .order("versao", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const novaVersao = (ultimaVersao?.versao ?? 0) + 1;
+
+  const { data: orcamento, error: erroOrcamento } = await supabase
+    .from("orcamentos")
+    .insert({ obra_id: obraId, versao: novaVersao, valor_total: valorTotal, aprovado: false })
+    .select()
+    .single();
+
+  if (erroOrcamento) throw new Error(`Falha ao criar orçamento: ${erroOrcamento.message}`);
+
+  const itensParaInserir = itens
+    .filter((i) => Number(i.valor) > 0)
+    .map((i) => ({
+      orcamento_id: orcamento.id,
+      descricao: i.descricao,
+      categoria: i.categoria,
+      quantidade: 1,
+      valor_unitario: Number(i.valor),
+    }));
+
+  if (itensParaInserir.length > 0) {
+    const { error: erroItens } = await supabase.from("itens_orcamento").insert(itensParaInserir);
+    if (erroItens) throw new Error(`Falha ao salvar itens do orçamento: ${erroItens.message}`);
+  }
+
+  return orcamento;
+}
+
+// ---------------------------------------------------------------------------
+// 6. Lançar um gasto (custo) da obra
+// ---------------------------------------------------------------------------
+export async function registrarCusto({ obraId, categoria, descricao, valor, data }) {
+  const { data: custo, error } = await supabase
+    .from("custos")
+    .insert({
+      obra_id: obraId,
+      categoria,
+      descricao,
+      valor: Number(valor),
+      data: data || new Date().toISOString().slice(0, 10),
+    })
+    .select()
+    .single();
+
+  if (error) throw new Error(`Falha ao registrar o gasto: ${error.message}`);
+  return custo;
+}
+
+// ---------------------------------------------------------------------------
+// 7. Adicionar uma nova etapa à obra (além das etapas padrão)
+// ---------------------------------------------------------------------------
+export async function adicionarEtapa(obraId, nome, ordem) {
+  const { data, error } = await supabase
+    .from("etapas")
+    .insert({ obra_id: obraId, nome, ordem, status: "pendente", percentual: 0 })
+    .select()
+    .single();
+
+  if (error) throw new Error(`Falha ao adicionar etapa: ${error.message}`);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// 8. Hook de tempo real — use no dashboard do CLIENTE (e do empreiteiro)
 //    Escuta mudanças em `obras` (progresso geral) e `fotos_progresso`
 //    (novas fotos) e atualiza a tela sem precisar dar F5.
 // ---------------------------------------------------------------------------
@@ -156,6 +235,16 @@ export function useObraRealtime(obraId) {
         { event: "UPDATE", schema: "public", table: "etapas", filter: `obra_id=eq.${obraId}` },
         (payload) =>
           setEtapas((prev) => prev.map((e) => (e.id === payload.new.id ? payload.new : e)))
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "etapas", filter: `obra_id=eq.${obraId}` },
+        (payload) =>
+          setEtapas((prev) =>
+            prev.some((e) => e.id === payload.new.id)
+              ? prev
+              : [...prev, payload.new].sort((a, b) => a.ordem - b.ordem)
+          )
       )
       .on(
         "postgres_changes",
