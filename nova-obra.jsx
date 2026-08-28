@@ -1,15 +1,19 @@
 import { useState } from "react";
-import { Building2, Mail, MapPin, Calendar, DollarSign, Loader2, AlertTriangle, ArrowLeft } from "lucide-react";
+import { Building2, Mail, MapPin, Calendar, DollarSign, Loader2, AlertTriangle, ArrowLeft, User, Lock, Shuffle } from "lucide-react";
 import { supabase } from "./supabase-obras";
 
 const ETAPAS_PADRAO = ["Fundação", "Alvenaria", "Elétrica / Hidráulica", "Reboco", "Pintura"];
 
+function gerarSenhaAleatoria() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
+  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+}
+
 // ---------------------------------------------------------------------------
-// Formulário de nova obra — usado pelo empreiteiro.
-// Como `obras.cliente_id` é obrigatório (not null) mas o cliente pode ainda
-// não ter conta no app, buscamos o e-mail dele em `usuarios`; se não existir,
-// avisamos pra ele se cadastrar primeiro (o convite automático por e-mail
-// fica de fora por enquanto — dá pra evoluir depois com uma Edge Function).
+// Formulário de nova obra — usado pelo empreiteiro. A conta do cliente é
+// criada AQUI, pela Edge Function "criar-cliente" (que usa a service role
+// no servidor — o navegador nunca tem essa chave). O empreiteiro define
+// nome, e-mail e senha do cliente e entrega esses dados a ele.
 //
 // Props:
 //  - usuario: { id, nome, tipo } — o empreiteiro logado
@@ -19,7 +23,9 @@ const ETAPAS_PADRAO = ["Fundação", "Alvenaria", "Elétrica / Hidráulica", "Re
 export default function NovaObra({ usuario, onCriada, onVoltar }) {
   const [nome, setNome] = useState("");
   const [endereco, setEndereco] = useState("");
+  const [nomeCliente, setNomeCliente] = useState("");
   const [emailCliente, setEmailCliente] = useState("");
+  const [senhaCliente, setSenhaCliente] = useState(gerarSenhaAleatoria());
   const [dataInicio, setDataInicio] = useState("");
   const [dataPrevistaFim, setDataPrevistaFim] = useState("");
   const [orcamentoTotal, setOrcamentoTotal] = useState("");
@@ -33,23 +39,26 @@ export default function NovaObra({ usuario, onCriada, onVoltar }) {
     setSalvando(true);
 
     try {
-      // 1. Encontra o cliente pelo e-mail (ele precisa já ter se cadastrado)
-      const { data: clientes, error: erroCliente } = await supabase.rpc(
-  "buscar_usuario_por_email",
-  { p_email: emailCliente.trim().toLowerCase() }
-);
-const cliente = clientes?.[0];
-
-
-      if (erroCliente) throw new Error(erroCliente.message);
-      if (!cliente) {
-        throw new Error(
-          "Não encontramos esse e-mail. Peça pro cliente criar a conta dele no app primeiro (aba \"Sou cliente\")."
-        );
+      // 1. Cria a conta do cliente via Edge Function (usa a service role no
+      //    servidor — o empreiteiro define a senha, o cliente já entra
+      //    direto com ela, sem precisar confirmar e-mail).
+      const { data: sessao } = await supabase.auth.getSession();
+      const resposta = await fetch(
+        `${supabase.supabaseUrl}/functions/v1/criar-cliente`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${sessao.session.access_token}`,
+          },
+          body: JSON.stringify({ nome: nomeCliente, email: emailCliente, senha: senhaCliente }),
+        }
+      );
+      const resultado = await resposta.json();
+      if (!resposta.ok) {
+        throw new Error(resultado.error || "Falha ao criar a conta do cliente.");
       }
-      if (cliente.tipo !== "cliente") {
-        throw new Error("Esse e-mail está cadastrado com outro tipo de conta (não é cliente).");
-      }
+      const clienteId = resultado.id;
 
       // 2. Cria a obra
       const { data: obra, error: erroObra } = await supabase
@@ -57,7 +66,7 @@ const cliente = clientes?.[0];
         .insert({
           nome,
           endereco,
-          cliente_id: cliente.id,
+          cliente_id: clienteId,
           empreiteiro_id: usuario.id,
           data_inicio: dataInicio || null,
           data_prevista_fim: dataPrevistaFim || null,
@@ -69,8 +78,7 @@ const cliente = clientes?.[0];
 
       if (erroObra) throw new Error(erroObra.message);
 
-      // 3. Vincula o próprio empreiteiro como membro da equipe (facilita a
-      //    query de "obras que participo" e futuras permissões por função)
+      // 3. Vincula o próprio empreiteiro como membro da equipe
       await supabase.from("equipe_obra").insert({
         obra_id: obra.id,
         usuario_id: usuario.id,
@@ -153,25 +161,62 @@ const cliente = clientes?.[0];
             </div>
           </div>
 
-          <div>
-            <label className="block text-[11px] tracking-wide uppercase text-[#8B8578] mb-1.5">E-mail do cliente</label>
-            <div className="relative">
-              <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8B8578]" />
-              <input
-                type="email"
-                required
-                value={emailCliente}
-                onChange={(e) => setEmailCliente(e.target.value)}
-                placeholder="cliente@email.com"
-                className="w-full bg-[#161510] border border-[#3A372E] rounded-md pl-9 pr-3 py-2.5 text-sm text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
-              />
+          <div className="border-t border-[#3A372E] pt-4">
+            <p className="text-[11px] tracking-wide uppercase text-[#8B8578] mb-3">Acesso do cliente</p>
+
+            <div className="space-y-3">
+              <div className="relative">
+                <User size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8B8578]" />
+                <input
+                  type="text"
+                  required
+                  value={nomeCliente}
+                  onChange={(e) => setNomeCliente(e.target.value)}
+                  placeholder="Nome do cliente"
+                  className="w-full bg-[#161510] border border-[#3A372E] rounded-md pl-9 pr-3 py-2.5 text-sm text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+                />
+              </div>
+
+              <div className="relative">
+                <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8B8578]" />
+                <input
+                  type="email"
+                  required
+                  value={emailCliente}
+                  onChange={(e) => setEmailCliente(e.target.value)}
+                  placeholder="E-mail do cliente"
+                  className="w-full bg-[#161510] border border-[#3A372E] rounded-md pl-9 pr-3 py-2.5 text-sm text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+                />
+              </div>
+
+              <div className="relative">
+                <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8B8578]" />
+                <input
+                  type="text"
+                  required
+                  minLength={6}
+                  value={senhaCliente}
+                  onChange={(e) => setSenhaCliente(e.target.value)}
+                  placeholder="Senha do cliente"
+                  className="w-full bg-[#161510] border border-[#3A372E] rounded-md pl-9 pr-9 py-2.5 text-sm text-[#EDEAE3] placeholder:text-[#8B8578] font-mono focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+                />
+                <button
+                  type="button"
+                  onClick={() => setSenhaCliente(gerarSenhaAleatoria())}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8B8578] hover:text-[#F5B400] transition-colors"
+                  aria-label="Gerar outra senha"
+                  title="Gerar outra senha"
+                >
+                  <Shuffle size={15} />
+                </button>
+              </div>
+              <p className="text-[10px] text-[#8B8578]">
+                Anote e-mail e senha pra repassar ao cliente — depois de salvo, a senha não fica mais visível aqui.
+              </p>
             </div>
-            <p className="text-[10px] text-[#8B8578] mt-1.5">
-              O cliente precisa já ter uma conta criada (tipo "cliente") pra ser vinculado à obra.
-            </p>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3 border-t border-[#3A372E] pt-4">
             <div>
               <label className="block text-[11px] tracking-wide uppercase text-[#8B8578] mb-1.5">Início previsto</label>
               <div className="relative">
@@ -235,10 +280,10 @@ const cliente = clientes?.[0];
           <button
             type="submit"
             disabled={salvando}
-            className="w-full flex items-center justify-center gap-2 bg-[#F5B400] hover:bg-[#e0a600] disabled:opacity-60 text-[#161510] font-medium text-sm px-3 py-2.5 rounded-md transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#EDEAE3]"
+            className="w-full flex items-center justify-center gap-2 bg-[#F5B400] hover:bg-[#e0a600] disabled:opacity-60 text-[#161510] font-medium text-sm px-3 py-2.5 rounded-md transition-colors"
           >
             {salvando ? <Loader2 size={16} className="animate-spin" /> : <Building2 size={16} />}
-            {salvando ? "Criando obra..." : "Criar obra"}
+            {salvando ? "Criando obra e acesso do cliente..." : "Criar obra"}
           </button>
         </form>
       </div>
