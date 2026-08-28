@@ -34,11 +34,12 @@ export default function NovaObra({ usuario, onCriada, onVoltar }) {
 
     try {
       // 1. Encontra o cliente pelo e-mail (ele precisa já ter se cadastrado)
-      const { data: cliente, error: erroCliente } = await supabase
-        .from("usuarios")
-        .select("id, tipo")
-        .eq("email", emailCliente.trim().toLowerCase())
-        .maybeSingle();
+      const { data: clientes, error: erroCliente } = await supabase.rpc(
+  "buscar_usuario_por_email",
+  { p_email: emailCliente.trim().toLowerCase() }
+);
+const cliente = clientes?.[0];
+
 
       if (erroCliente) throw new Error(erroCliente.message);
       if (!cliente) {
