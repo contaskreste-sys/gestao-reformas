@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Camera,
   ImagePlus,
@@ -13,25 +13,26 @@ import {
   Clock3,
   Loader2,
   AlertTriangle,
+  Plus,
+  Receipt,
 } from "lucide-react";
 import {
   useObraRealtime,
   postarFotoProgresso,
   atualizarPercentualEtapa,
   atualizarStatusObra,
+  criarOrcamento,
+  registrarCusto,
+  adicionarEtapa,
+  supabase,
 } from "./supabase-obras";
 
-// ---------------------------------------------------------------------------
-// Financeiro ainda não tem tabela "escutada" em tempo real (não foi pedido).
-// Buscar isso normalmente via supabase.from('custos')/('orcamentos') numa
-// query única (useEffect simples) e passar como prop, ou expandir o hook
-// useObraRealtime do mesmo jeito que fizemos com etapas/fotos.
-// ---------------------------------------------------------------------------
-const CATEGORIAS_FINANCEIRO_MOCK = [
-  { nome: "Material", orcado: 45000, gasto: 38200 },
-  { nome: "Mão de obra", orcado: 32000, gasto: 29500 },
-  { nome: "Equipamentos", orcado: 8000, gasto: 9100 },
-  { nome: "Imprevistos", orcado: 5000, gasto: 1200 },
+const CATEGORIAS_CUSTO = [
+  { valor: "material", label: "Material" },
+  { valor: "mao_de_obra", label: "Mão de obra" },
+  { valor: "equipamento", label: "Equipamentos" },
+  { valor: "imprevisto", label: "Imprevistos" },
+  { valor: "outro", label: "Outro" },
 ];
 
 function formatBRL(v) {
@@ -42,7 +43,7 @@ function formatBRL(v) {
 // Barra "trena" — agora dirigida pelos dados reais (obra.progresso_percent
 // e etapas.percentual vindos do useObraRealtime)
 // ---------------------------------------------------------------------------
-function TrenaProgresso({ percent, etapas, onEditarEtapa }) {
+function TrenaProgresso({ percent, etapas, onEditarEtapa, onAdicionarEtapa, adicionando }) {
   const ticks = Array.from({ length: 21 }, (_, i) => i * 5);
   const etapaAtual = etapas.find((e) => e.percentual > 0 && e.percentual < 100) ?? etapas[0];
 
@@ -113,6 +114,14 @@ function TrenaProgresso({ percent, etapas, onEditarEtapa }) {
             </div>
           </button>
         ))}
+        <button
+          onClick={onAdicionarEtapa}
+          disabled={adicionando}
+          className="flex items-center justify-center gap-1.5 border border-dashed border-[#3A372E] hover:border-[#F5B400]/50 text-[#8B8578] hover:text-[#F5B400] rounded-md px-3 py-2 text-[11px] font-medium transition-colors disabled:opacity-60"
+        >
+          {adicionando ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
+          Nova etapa
+        </button>
       </div>
     </div>
   );
@@ -223,17 +232,193 @@ function DiarioDeObra({ obraId, usuarioId, etapaSelecionadaId, fotos }) {
 // Resumo financeiro (segue com dados mockados até você conectar as tabelas
 // custos/orcamentos — a lógica de UI já está pronta pra receber os dois)
 // ---------------------------------------------------------------------------
-function ResumoFinanceiro({ categorias }) {
-  const totalOrcado = categorias.reduce((a, c) => a + c.orcado, 0);
-  const totalGasto = categorias.reduce((a, c) => a + c.gasto, 0);
+function ResumoFinanceiro({ obraId }) {
+  const [orcamento, setOrcamento] = useState(null);
+  const [itens, setItens] = useState([]);
+  const [custos, setCustos] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState(null);
+
+  const [criandoOrcamento, setCriandoOrcamento] = useState(false);
+  const [salvandoOrcamento, setSalvandoOrcamento] = useState(false);
+  const [valoresOrcamento, setValoresOrcamento] = useState(
+    Object.fromEntries(CATEGORIAS_CUSTO.map((c) => [c.valor, ""]))
+  );
+
+  const [mostrarNovoGasto, setMostrarNovoGasto] = useState(false);
+  const [novoGasto, setNovoGasto] = useState({ categoria: "material", descricao: "", valor: "" });
+  const [salvandoGasto, setSalvandoGasto] = useState(false);
+
+  async function carregarTudo() {
+    setCarregando(true);
+    const { data: orcamentoData } = await supabase
+      .from("orcamentos")
+      .select("*")
+      .eq("obra_id", obraId)
+      .order("versao", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let itensData = [];
+    if (orcamentoData) {
+      const { data } = await supabase
+        .from("itens_orcamento")
+        .select("*")
+        .eq("orcamento_id", orcamentoData.id);
+      itensData = data ?? [];
+    }
+
+    const { data: custosData } = await supabase.from("custos").select("*").eq("obra_id", obraId);
+
+    setOrcamento(orcamentoData);
+    setItens(itensData);
+    setCustos(custosData ?? []);
+    setCarregando(false);
+  }
+
+  useEffect(() => {
+    carregarTudo();
+  }, [obraId]);
+
+  async function handleSalvarOrcamento() {
+    setSalvandoOrcamento(true);
+    setErro(null);
+    try {
+      const itensParaSalvar = CATEGORIAS_CUSTO.map((c) => ({
+        categoria: c.valor,
+        descricao: c.label,
+        valor: valoresOrcamento[c.valor],
+      }));
+      await criarOrcamento(obraId, itensParaSalvar);
+      setCriandoOrcamento(false);
+      await carregarTudo();
+    } catch (err) {
+      setErro(err.message);
+    } finally {
+      setSalvandoOrcamento(false);
+    }
+  }
+
+  async function handleRegistrarGasto() {
+    if (!novoGasto.valor || Number(novoGasto.valor) <= 0) {
+      setErro("Informe um valor válido pro gasto.");
+      return;
+    }
+    setSalvandoGasto(true);
+    setErro(null);
+    try {
+      await registrarCusto({
+        obraId,
+        categoria: novoGasto.categoria,
+        descricao: novoGasto.descricao || null,
+        valor: novoGasto.valor,
+      });
+      setNovoGasto({ categoria: "material", descricao: "", valor: "" });
+      setMostrarNovoGasto(false);
+      await carregarTudo();
+    } catch (err) {
+      setErro(err.message);
+    } finally {
+      setSalvandoGasto(false);
+    }
+  }
+
+  if (carregando) {
+    return (
+      <div className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 h-full flex items-center justify-center">
+        <Loader2 size={20} className="text-[#F5B400] animate-spin" />
+      </div>
+    );
+  }
+
+  // ---- Sem orçamento ainda: mostra o formulário de criação ----
+  if (!orcamento && !criandoOrcamento) {
+    return (
+      <div className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 h-full flex flex-col items-center justify-center text-center gap-3">
+        <DollarSign size={22} className="text-[#8B8578]" />
+        <p className="text-sm text-[#EDEAE3]">Essa obra ainda não tem orçamento.</p>
+        <button
+          onClick={() => setCriandoOrcamento(true)}
+          className="flex items-center gap-1.5 bg-[#F5B400] hover:bg-[#e0a600] text-[#161510] font-medium text-sm px-3 py-2 rounded-md transition-colors"
+        >
+          <Plus size={15} /> Criar orçamento
+        </button>
+      </div>
+    );
+  }
+
+  if (criandoOrcamento) {
+    return (
+      <div className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 h-full">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-[Oswald] text-lg text-[#EDEAE3]">Novo orçamento</h2>
+          <DollarSign size={18} className="text-[#F5B400]" />
+        </div>
+        <div className="space-y-3 mb-4">
+          {CATEGORIAS_CUSTO.map((c) => (
+            <div key={c.valor}>
+              <label className="block text-[11px] text-[#8B8578] mb-1">{c.label}</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={valoresOrcamento[c.valor]}
+                onChange={(e) =>
+                  setValoresOrcamento((prev) => ({ ...prev, [c.valor]: e.target.value }))
+                }
+                placeholder="0,00"
+                className="w-full bg-[#161510] border border-[#3A372E] rounded-md px-3 py-2 text-sm text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+              />
+            </div>
+          ))}
+        </div>
+        {erro && (
+          <p className="flex items-center gap-1.5 text-xs text-[#F0793D] mb-3">
+            <AlertTriangle size={13} /> {erro}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <button
+            onClick={() => setCriandoOrcamento(false)}
+            className="flex-1 text-sm text-[#8B8578] hover:text-[#EDEAE3] py-2 transition-colors"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={handleSalvarOrcamento}
+            disabled={salvandoOrcamento}
+            className="flex-1 flex items-center justify-center gap-2 bg-[#F5B400] hover:bg-[#e0a600] disabled:opacity-60 text-[#161510] font-medium text-sm px-3 py-2 rounded-md transition-colors"
+          >
+            {salvandoOrcamento ? <Loader2 size={15} className="animate-spin" /> : "Salvar"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Com orçamento: mostra o resumo real ----
+  const totalOrcado = itens.reduce((soma, i) => soma + i.quantidade * i.valor_unitario, 0);
+  const totalGasto = custos.reduce((soma, c) => soma + Number(c.valor), 0);
   const saldo = totalOrcado - totalGasto;
-  const percentGasto = Math.min(Math.round((totalGasto / totalOrcado) * 100), 999);
+  const percentGasto = totalOrcado > 0 ? Math.round((totalGasto / totalOrcado) * 100) : 0;
+
+  const porCategoria = CATEGORIAS_CUSTO.map((c) => {
+    const orcadoCat = itens
+      .filter((i) => i.categoria === c.valor)
+      .reduce((s, i) => s + i.quantidade * i.valor_unitario, 0);
+    const gastoCat = custos
+      .filter((cu) => cu.categoria === c.valor)
+      .reduce((s, cu) => s + Number(cu.valor), 0);
+    return { ...c, orcado: orcadoCat, gasto: gastoCat };
+  }).filter((c) => c.orcado > 0 || c.gasto > 0);
 
   return (
     <div className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 h-full flex flex-col">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <p className="text-[11px] tracking-[0.25em] uppercase text-[#8B8578] font-medium">Financeiro</p>
+          <p className="text-[11px] tracking-[0.25em] uppercase text-[#8B8578] font-medium">
+            Financeiro {!orcamento.aprovado && "· aguardando aprovação"}
+          </p>
           <h2 className="font-[Oswald] text-xl text-[#EDEAE3]">Orçado vs. Gasto</h2>
         </div>
         <DollarSign size={20} className="text-[#F5B400]" />
@@ -263,13 +448,16 @@ function ResumoFinanceiro({ categorias }) {
       </div>
 
       <div className="space-y-3.5 flex-1">
-        {categorias.map((c) => {
-          const pct = Math.min(Math.round((c.gasto / c.orcado) * 100), 100);
+        {porCategoria.length === 0 && (
+          <p className="text-xs text-[#8B8578] text-center py-4">Nenhum gasto lançado ainda.</p>
+        )}
+        {porCategoria.map((c) => {
+          const pct = c.orcado > 0 ? Math.min(Math.round((c.gasto / c.orcado) * 100), 100) : 100;
           const estourou = c.gasto > c.orcado;
           return (
-            <div key={c.nome}>
+            <div key={c.valor}>
               <div className="flex justify-between items-baseline mb-1">
-                <span className="text-xs text-[#EDEAE3]/80">{c.nome}</span>
+                <span className="text-xs text-[#EDEAE3]/80">{c.label}</span>
                 <span className={`text-[11px] font-[JetBrains_Mono] ${estourou ? "text-[#F0793D]" : "text-[#8B8578]"}`}>
                   {formatBRL(c.gasto)} / {formatBRL(c.orcado)}
                 </span>
@@ -282,7 +470,61 @@ function ResumoFinanceiro({ categorias }) {
         })}
       </div>
 
-      <p className="text-[10px] text-[#8B8578] mt-4 pt-3 border-t border-[#3A372E] font-[JetBrains_Mono]">
+      {mostrarNovoGasto ? (
+        <div className="mt-4 pt-4 border-t border-[#3A372E] space-y-2">
+          <select
+            value={novoGasto.categoria}
+            onChange={(e) => setNovoGasto((p) => ({ ...p, categoria: e.target.value }))}
+            className="w-full bg-[#161510] border border-[#3A372E] rounded-md px-3 py-2 text-xs text-[#EDEAE3] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+          >
+            {CATEGORIAS_CUSTO.map((c) => (
+              <option key={c.valor} value={c.valor}>{c.label}</option>
+            ))}
+          </select>
+          <input
+            type="text"
+            value={novoGasto.descricao}
+            onChange={(e) => setNovoGasto((p) => ({ ...p, descricao: e.target.value }))}
+            placeholder="Descrição (opcional)"
+            className="w-full bg-[#161510] border border-[#3A372E] rounded-md px-3 py-2 text-xs text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+          />
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={novoGasto.valor}
+            onChange={(e) => setNovoGasto((p) => ({ ...p, valor: e.target.value }))}
+            placeholder="Valor (R$)"
+            className="w-full bg-[#161510] border border-[#3A372E] rounded-md px-3 py-2 text-xs text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-2 focus:ring-[#F5B400]/50"
+          />
+          {erro && (
+            <p className="flex items-center gap-1.5 text-xs text-[#F0793D]">
+              <AlertTriangle size={13} /> {erro}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <button onClick={() => setMostrarNovoGasto(false)} className="flex-1 text-xs text-[#8B8578] py-2">
+              Cancelar
+            </button>
+            <button
+              onClick={handleRegistrarGasto}
+              disabled={salvandoGasto}
+              className="flex-1 flex items-center justify-center gap-1.5 bg-[#F5B400] hover:bg-[#e0a600] disabled:opacity-60 text-[#161510] font-medium text-xs px-3 py-2 rounded-md transition-colors"
+            >
+              {salvandoGasto ? <Loader2 size={14} className="animate-spin" /> : "Salvar gasto"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setMostrarNovoGasto(true)}
+          className="mt-4 pt-4 border-t border-[#3A372E] flex items-center justify-center gap-1.5 text-xs text-[#8B8578] hover:text-[#F5B400] transition-colors"
+        >
+          <Receipt size={13} /> Lançar gasto
+        </button>
+      )}
+
+      <p className="text-[10px] text-[#8B8578] mt-4 font-[JetBrains_Mono]">
         {percentGasto}% do orçamento total consumido
       </p>
     </div>
@@ -342,6 +584,21 @@ export default function DashboardMestreObras({ obraId, usuarioId }) {
   const [etapaSelecionada, setEtapaSelecionada] = useState(null);
   const [salvandoEtapa, setSalvandoEtapa] = useState(false);
   const [salvandoStatus, setSalvandoStatus] = useState(false);
+  const [adicionandoEtapa, setAdicionandoEtapa] = useState(false);
+
+  async function handleAdicionarEtapa() {
+    const nome = window.prompt("Nome da nova etapa (ex: Instalação de pisos):");
+    if (!nome || !nome.trim()) return;
+    setAdicionandoEtapa(true);
+    try {
+      await adicionarEtapa(obraId, nome.trim(), etapas.length + 1);
+      // realtime cuida de inserir na lista sozinho
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setAdicionandoEtapa(false);
+    }
+  }
 
   async function handleAlterarStatus(novoStatus) {
     setSalvandoStatus(true);
@@ -428,7 +685,13 @@ export default function DashboardMestreObras({ obraId, usuarioId }) {
         {salvandoEtapa && <p className="text-[11px] text-[#F5B400] -mt-4 mb-4 text-right">Salvando etapa...</p>}
 
         <section className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 mb-5">
-          <TrenaProgresso percent={obra.progresso_percent} etapas={etapas} onEditarEtapa={handleEditarEtapa} />
+          <TrenaProgresso
+            percent={obra.progresso_percent}
+            etapas={etapas}
+            onEditarEtapa={handleEditarEtapa}
+            onAdicionarEtapa={handleAdicionarEtapa}
+            adicionando={adicionandoEtapa}
+          />
         </section>
 
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -441,7 +704,7 @@ export default function DashboardMestreObras({ obraId, usuarioId }) {
             />
           </div>
           <div className="lg:col-span-1">
-            <ResumoFinanceiro categorias={CATEGORIAS_FINANCEIRO_MOCK} />
+            <ResumoFinanceiro obraId={obraId} />
           </div>
         </section>
       </div>
