@@ -179,7 +179,23 @@ export async function adicionarEtapa(obraId, nome, ordem) {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Hook de tempo real — use no dashboard do CLIENTE (e do empreiteiro)
+// 9. Excluir uma etapa
+// ---------------------------------------------------------------------------
+export async function excluirEtapa(etapaId) {
+  const { error } = await supabase.from("etapas").delete().eq("id", etapaId);
+  if (error) throw new Error(`Falha ao excluir etapa: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// 10. Excluir um gasto lançado
+// ---------------------------------------------------------------------------
+export async function excluirCusto(custoId) {
+  const { error } = await supabase.from("custos").delete().eq("id", custoId);
+  if (error) throw new Error(`Falha ao excluir gasto: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// 11. Hook de tempo real — use no dashboard do CLIENTE (e do empreiteiro)
 //    Escuta mudanças em `obras` (progresso geral) e `fotos_progresso`
 //    (novas fotos) e atualiza a tela sem precisar dar F5.
 // ---------------------------------------------------------------------------
@@ -245,6 +261,11 @@ export function useObraRealtime(obraId) {
               ? prev
               : [...prev, payload.new].sort((a, b) => a.ordem - b.ordem)
           )
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "etapas", filter: `obra_id=eq.${obraId}` },
+        (payload) => setEtapas((prev) => prev.filter((e) => e.id !== payload.old.id))
       )
       .on(
         "postgres_changes",
