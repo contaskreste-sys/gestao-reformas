@@ -11,12 +11,12 @@ export const supabase = createClient(
 );
 
 // ---------------------------------------------------------------------------
-// 1. Postar uma foto de progresso
+// 1. Postar uma foto OU vídeo de progresso
 //    - Sobe o arquivo pro bucket 'fotos-obra' (path: obraId/arquivo)
 //    - Como o bucket é privado, gera uma signed URL (válida por tempo limitado)
-//    - Insere o registro em fotos_progresso
+//    - Insere o registro em fotos_progresso, marcando tipo: 'foto' | 'video'
 // ---------------------------------------------------------------------------
-export async function postarFotoProgresso({ obraId, etapaId, usuarioId, file, descricao }) {
+export async function postarFotoProgresso({ obraId, etapaId, usuarioId, file, descricao, tipo = "foto" }) {
   const extensao = file.name.split(".").pop();
   const caminho = `${obraId}/${Date.now()}-${crypto.randomUUID()}.${extensao}`;
 
@@ -44,8 +44,9 @@ export async function postarFotoProgresso({ obraId, etapaId, usuarioId, file, de
       etapa_id: etapaId,
       usuario_id: usuarioId,
       url: signedData.signedUrl,
-      caminho_storage: caminho, // guarde o path bruto pra regenerar a URL depois
+      caminho_storage: caminho,
       descricao,
+      tipo,
     })
     .select()
     .single();
@@ -195,7 +196,51 @@ export async function excluirCusto(custoId) {
 }
 
 // ---------------------------------------------------------------------------
-// 11. Hook de tempo real — use no dashboard do CLIENTE (e do empreiteiro)
+// 12. Editar um item de orçamento existente (nome e/ou valor)
+// ---------------------------------------------------------------------------
+export async function atualizarItemOrcamento(itemId, { descricao, categoria, valor }) {
+  const { data, error } = await supabase
+    .from("itens_orcamento")
+    .update({ descricao, categoria, valor_unitario: Number(valor) })
+    .eq("id", itemId)
+    .select()
+    .single();
+  if (error) throw new Error(`Falha ao editar item: ${error.message}`);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// 13. Editar um gasto existente (nome e/ou valor)
+// ---------------------------------------------------------------------------
+export async function atualizarCusto(custoId, { descricao, categoria, valor }) {
+  const { data, error } = await supabase
+    .from("custos")
+    .update({ descricao, categoria, valor: Number(valor) })
+    .eq("id", custoId)
+    .select()
+    .single();
+  if (error) throw new Error(`Falha ao editar gasto: ${error.message}`);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// 14. Excluir uma foto ou vídeo do diário de obra
+// ---------------------------------------------------------------------------
+export async function excluirFotoProgresso(fotoId) {
+  const { error } = await supabase.from("fotos_progresso").delete().eq("id", fotoId);
+  if (error) throw new Error(`Falha ao excluir: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// 16. Excluir um item de orçamento
+// ---------------------------------------------------------------------------
+export async function excluirItemOrcamento(itemId) {
+  const { error } = await supabase.from("itens_orcamento").delete().eq("id", itemId);
+  if (error) throw new Error(`Falha ao excluir item: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// 17. Hook de tempo real — use no dashboard do CLIENTE (e do empreiteiro)
 //    Escuta mudanças em `obras` (progresso geral) e `fotos_progresso`
 //    (novas fotos) e atualiza a tela sem precisar dar F5.
 // ---------------------------------------------------------------------------
