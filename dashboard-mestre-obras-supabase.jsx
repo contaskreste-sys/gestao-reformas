@@ -16,6 +16,10 @@ import {
   Plus,
   Receipt,
   Trash2,
+  Video,
+  ArrowLeft,
+  Pencil,
+  Check,
 } from "lucide-react";
 import {
   useObraRealtime,
@@ -27,6 +31,9 @@ import {
   adicionarEtapa,
   excluirEtapa,
   excluirCusto,
+  excluirFotoProgresso,
+  atualizarItemOrcamento,
+  atualizarCusto,
   supabase,
 } from "./supabase-obras";
 
@@ -134,13 +141,74 @@ function TrenaProgresso({ percent, etapas, onEditarEtapa, onExcluirEtapa, onAdic
 }
 
 // ---------------------------------------------------------------------------
-// Diário de obra — agora sobe pro Storage de verdade via postarFotoProgresso
+// Visualizador ampliado (lightbox) — compartilhado entre fotos e vídeos
+// ---------------------------------------------------------------------------
+function Lightbox({ item, onClose }) {
+  if (!item) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 text-[#EDEAE3] hover:text-[#F5B400] transition-colors"
+        aria-label="Fechar"
+      >
+        <X size={26} />
+      </button>
+      <div className="max-w-3xl w-full" onClick={(e) => e.stopPropagation()}>
+        {item.tipo === "video" ? (
+          <video src={item.url} controls autoPlay className="w-full max-h-[80vh] rounded-lg" />
+        ) : (
+          <img src={item.url} alt={item.descricao} className="w-full max-h-[80vh] object-contain rounded-lg" />
+        )}
+        <p className="text-sm text-[#EDEAE3] mt-3">{item.descricao}</p>
+        <p className="text-xs text-[#8B8578] font-[JetBrains_Mono]">
+          {new Date(item.data_upload).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" })}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function agruparPorData(itens) {
+  const grupos = [];
+  let grupoAtual = null;
+  itens.forEach((item) => {
+    const chave = new Date(item.data_upload).toLocaleDateString("pt-BR");
+    if (!grupoAtual || grupoAtual.chave !== chave) {
+      grupoAtual = {
+        chave,
+        label: new Date(item.data_upload).toLocaleDateString("pt-BR", {
+          weekday: "long",
+          day: "2-digit",
+          month: "long",
+        }),
+        itens: [],
+      };
+      grupos.push(grupoAtual);
+    }
+    grupoAtual.itens.push(item);
+  });
+  return grupos;
+}
+
+// ---------------------------------------------------------------------------
+// Diário de obra — fotos e vídeos, em abas separadas, agrupados por data,
+// com ampliação ao clicar e exclusão
 // ---------------------------------------------------------------------------
 function DiarioDeObra({ obraId, usuarioId, etapaSelecionadaId, fotos }) {
+  const [aba, setAba] = useState("foto"); // "foto" | "video"
   const [legenda, setLegenda] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [erroEnvio, setErroEnvio] = useState(null);
+  const [ampliado, setAmpliado] = useState(null);
+  const [excluindoId, setExcluindoId] = useState(null);
   const inputRef = useRef(null);
+
+  const itensDaAba = fotos.filter((f) => (f.tipo || "foto") === aba);
+  const grupos = agruparPorData(itensDaAba);
 
   async function handleArquivo(e) {
     const file = e.target.files?.[0];
@@ -155,11 +223,9 @@ function DiarioDeObra({ obraId, usuarioId, etapaSelecionadaId, fotos }) {
         usuarioId,
         file,
         descricao: legenda || "Registro do dia",
+        tipo: aba,
       });
       setLegenda("");
-      // não precisa atualizar o state manualmente: o realtime (INSERT em
-      // fotos_progresso) já traz a foto nova pra todo mundo, inclusive pra
-      // quem postou.
     } catch (err) {
       setErroEnvio(err.message);
     } finally {
@@ -168,16 +234,50 @@ function DiarioDeObra({ obraId, usuarioId, etapaSelecionadaId, fotos }) {
     }
   }
 
+  async function handleExcluir(id) {
+    if (!window.confirm(aba === "video" ? "Excluir esse vídeo?" : "Excluir essa foto?")) return;
+    setExcluindoId(id);
+    try {
+      await excluirFotoProgresso(id);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setExcluindoId(null);
+    }
+  }
+
   return (
     <div className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 h-full">
+      <Lightbox item={ampliado} onClose={() => setAmpliado(null)} />
+
       <div className="flex items-center justify-between mb-4">
         <div>
           <p className="text-[11px] tracking-[0.25em] uppercase text-[#8B8578] font-medium">
             Diário de obra
           </p>
-          <h2 className="font-[Oswald] text-xl text-[#EDEAE3]">Fotos de hoje</h2>
+          <h2 className="font-[Oswald] text-xl text-[#EDEAE3]">Fotos e vídeos</h2>
         </div>
         <Camera size={20} className="text-[#F5B400]" />
+      </div>
+
+      {/* Abas */}
+      <div className="grid grid-cols-2 gap-1 bg-[#161510] rounded-md p-1 mb-4">
+        <button
+          onClick={() => setAba("foto")}
+          className={`flex items-center justify-center gap-1.5 text-xs font-medium py-2 rounded-sm transition-colors ${
+            aba === "foto" ? "bg-[#F5B400] text-[#161510]" : "text-[#8B8578]"
+          }`}
+        >
+          <Camera size={13} /> Fotos
+        </button>
+        <button
+          onClick={() => setAba("video")}
+          className={`flex items-center justify-center gap-1.5 text-xs font-medium py-2 rounded-sm transition-colors ${
+            aba === "video" ? "bg-[#F5B400] text-[#161510]" : "text-[#8B8578]"
+          }`}
+        >
+          <Video size={13} /> Vídeos
+        </button>
       </div>
 
       <div className="flex gap-2 mb-2">
@@ -191,7 +291,7 @@ function DiarioDeObra({ obraId, usuarioId, etapaSelecionadaId, fotos }) {
         <input
           ref={inputRef}
           type="file"
-          accept="image/*"
+          accept={aba === "video" ? "video/*" : "image/*"}
           capture="environment"
           onChange={handleArquivo}
           className="hidden"
@@ -212,20 +312,52 @@ function DiarioDeObra({ obraId, usuarioId, etapaSelecionadaId, fotos }) {
         </p>
       )}
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-3">
-        {fotos.length === 0 && (
-          <p className="col-span-full text-xs text-[#8B8578] py-6 text-center">
-            Nenhuma foto postada ainda. Registre o primeiro avanço do dia.
-          </p>
-        )}
-        {fotos.map((f) => (
-          <div key={f.id} className="group relative aspect-square rounded-md overflow-hidden border border-[#3A372E]">
-            <img src={f.url} alt={f.descricao} className="w-full h-full object-cover" />
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-2 pt-4">
-              <p className="text-[10px] text-[#EDEAE3] font-medium leading-tight truncate">{f.descricao}</p>
-              <p className="text-[9px] text-[#EDEAE3]/60 font-[JetBrains_Mono]">
-                {new Date(f.data_upload).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
-              </p>
+      {grupos.length === 0 && (
+        <p className="text-xs text-[#8B8578] py-6 text-center">
+          {aba === "video" ? "Nenhum vídeo postado ainda." : "Nenhuma foto postada ainda."}
+        </p>
+      )}
+
+      <div className="space-y-4 mt-3 max-h-[520px] overflow-y-auto pr-1">
+        {grupos.map((grupo) => (
+          <div key={grupo.chave}>
+            <p className="text-[10px] uppercase tracking-wide text-[#8B8578] mb-2 capitalize">{grupo.label}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {grupo.itens.map((f) => (
+                <div
+                  key={f.id}
+                  className="group relative aspect-square rounded-md overflow-hidden border border-[#3A372E] cursor-pointer"
+                  onClick={() => setAmpliado(f)}
+                >
+                  {f.tipo === "video" ? (
+                    <video src={f.url} className="w-full h-full object-cover" muted />
+                  ) : (
+                    <img src={f.url} alt={f.descricao} className="w-full h-full object-cover" />
+                  )}
+                  {f.tipo === "video" && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                      <div className="w-8 h-8 rounded-full bg-black/50 flex items-center justify-center">
+                        <Video size={14} className="text-white" />
+                      </div>
+                    </div>
+                  )}
+                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-2 pt-4">
+                    <p className="text-[10px] text-[#EDEAE3] font-medium leading-tight truncate">{f.descricao}</p>
+                  </div>
+                  <button
+                    onClick={(ev) => { ev.stopPropagation(); handleExcluir(f.id); }}
+                    disabled={excluindoId === f.id}
+                    className="absolute top-1.5 right-1.5 bg-black/50 hover:bg-black/80 rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                    aria-label="Excluir"
+                  >
+                    {excluindoId === f.id ? (
+                      <Loader2 size={12} className="text-[#EDEAE3] animate-spin" />
+                    ) : (
+                      <Trash2 size={12} className="text-[#EDEAE3]" />
+                    )}
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         ))}
@@ -238,6 +370,54 @@ function DiarioDeObra({ obraId, usuarioId, etapaSelecionadaId, fotos }) {
 // Resumo financeiro (segue com dados mockados até você conectar as tabelas
 // custos/orcamentos — a lógica de UI já está pronta pra receber os dois)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Linha editável — usada tanto pra itens de orçamento quanto pra gastos.
+// Clique no lápis pra virar campos de edição; check salva, X cancela.
+// ---------------------------------------------------------------------------
+function LinhaEditavel({ nome, valor, editando, salvandoEdicao, excluindo, onEditar, onMudarCampo, onSalvar, onCancelar, onExcluir }) {
+  if (editando) {
+    return (
+      <div className="flex items-center gap-1.5 py-1">
+        <input
+          type="text"
+          value={editando.nome}
+          onChange={(e) => onMudarCampo("nome", e.target.value)}
+          className="flex-1 min-w-0 bg-[#161510] border border-[#3A372E] rounded px-2 py-1 text-[11px] text-[#EDEAE3] focus:outline-none focus:ring-1 focus:ring-[#F5B400]/50"
+        />
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={editando.valor}
+          onChange={(e) => onMudarCampo("valor", e.target.value)}
+          className="w-20 bg-[#161510] border border-[#3A372E] rounded px-2 py-1 text-[11px] text-[#EDEAE3] focus:outline-none focus:ring-1 focus:ring-[#F5B400]/50"
+        />
+        <button onClick={onSalvar} disabled={salvandoEdicao} className="text-[#6FA87F] hover:text-[#4A7C59] shrink-0" aria-label="Salvar">
+          {salvandoEdicao ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+        </button>
+        <button onClick={onCancelar} className="text-[#8B8578] hover:text-[#F0793D] shrink-0" aria-label="Cancelar">
+          <X size={13} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between group text-xs py-0.5">
+      <span className="text-[#EDEAE3]/80 truncate pr-2">{nome}</span>
+      <div className="flex items-center gap-2 shrink-0">
+        <span className="font-[JetBrains_Mono] text-[#8B8578]">{formatBRL(valor)}</span>
+        <button onClick={onEditar} className="text-[#8B8578] hover:text-[#F5B400] opacity-0 group-hover:opacity-100 transition-opacity" aria-label="Editar">
+          <Pencil size={12} />
+        </button>
+        <button onClick={onExcluir} disabled={excluindo} className="text-[#8B8578] hover:text-[#F0793D] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40" aria-label="Excluir">
+          {excluindo ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ResumoFinanceiro({ obraId }) {
   const [orcamento, setOrcamento] = useState(null);
   const [itens, setItens] = useState([]);
@@ -253,6 +433,8 @@ function ResumoFinanceiro({ obraId }) {
   const [novoGasto, setNovoGasto] = useState({ nome: "", valor: "" });
   const [salvandoGasto, setSalvandoGasto] = useState(false);
   const [excluindoId, setExcluindoId] = useState(null);
+  const [editando, setEditando] = useState(null); // { tipo: 'item'|'custo', id, nome, valor }
+  const [salvandoEdicao, setSalvandoEdicao] = useState(false);
 
   async function carregarTudo() {
     setCarregando(true);
@@ -358,6 +540,54 @@ function ResumoFinanceiro({ obraId }) {
       alert(err.message);
     } finally {
       setExcluindoId(null);
+    }
+  }
+
+  async function handleExcluirItem(id) {
+    if (!window.confirm("Excluir esse item do orçamento?")) return;
+    setExcluindoId(id);
+    try {
+      await excluirItemOrcamento(id);
+      await carregarTudo();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setExcluindoId(null);
+    }
+  }
+
+  function iniciarEdicao(tipo, registro) {
+    setEditando({
+      tipo,
+      id: registro.id,
+      nome: registro.categoria || registro.descricao || "",
+      valor: tipo === "item" ? registro.valor_unitario : registro.valor,
+    });
+  }
+
+  async function handleSalvarEdicao() {
+    if (!editando.nome.trim() || Number(editando.valor) <= 0) return;
+    setSalvandoEdicao(true);
+    try {
+      if (editando.tipo === "item") {
+        await atualizarItemOrcamento(editando.id, {
+          descricao: editando.nome.trim(),
+          categoria: editando.nome.trim(),
+          valor: editando.valor,
+        });
+      } else {
+        await atualizarCusto(editando.id, {
+          descricao: editando.nome.trim(),
+          categoria: editando.nome.trim(),
+          valor: editando.valor,
+        });
+      }
+      setEditando(null);
+      await carregarTudo();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setSalvandoEdicao(false);
     }
   }
 
@@ -533,26 +763,51 @@ function ResumoFinanceiro({ obraId }) {
         })}
       </div>
 
-      {/* Lista de lançamentos individuais, com exclusão */}
+      {/* Itens do orçamento — editáveis */}
+      {itens.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-[#3A372E]">
+          <p className="text-[10px] uppercase tracking-wide text-[#8B8578] mb-2">Itens do orçamento</p>
+          <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+            {itens.map((item) => (
+              <LinhaEditavel
+                key={item.id}
+                registro={item}
+                nome={item.categoria || item.descricao}
+                valor={item.valor_unitario}
+                editando={editando?.tipo === "item" && editando.id === item.id ? editando : null}
+                salvandoEdicao={salvandoEdicao}
+                excluindo={excluindoId === item.id}
+                onEditar={() => iniciarEdicao("item", item)}
+                onMudarCampo={(campo, v) => setEditando((p) => ({ ...p, [campo]: v }))}
+                onSalvar={handleSalvarEdicao}
+                onCancelar={() => setEditando(null)}
+                onExcluir={() => handleExcluirItem(item.id)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Lista de lançamentos individuais — editáveis */}
       {custos.length > 0 && (
         <div className="mt-4 pt-4 border-t border-[#3A372E]">
           <p className="text-[10px] uppercase tracking-wide text-[#8B8578] mb-2">Lançamentos</p>
           <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
             {custos.map((c) => (
-              <div key={c.id} className="flex items-center justify-between group text-xs">
-                <span className="text-[#EDEAE3]/80 truncate pr-2">{c.descricao || c.categoria}</span>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="font-[JetBrains_Mono] text-[#8B8578]">{formatBRL(Number(c.valor))}</span>
-                  <button
-                    onClick={() => handleExcluirGasto(c.id)}
-                    disabled={excluindoId === c.id}
-                    className="text-[#8B8578] hover:text-[#F0793D] opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-40"
-                    aria-label="Excluir gasto"
-                  >
-                    {excluindoId === c.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                  </button>
-                </div>
-              </div>
+              <LinhaEditavel
+                key={c.id}
+                registro={c}
+                nome={c.descricao || c.categoria}
+                valor={Number(c.valor)}
+                editando={editando?.tipo === "custo" && editando.id === c.id ? editando : null}
+                salvandoEdicao={salvandoEdicao}
+                excluindo={excluindoId === c.id}
+                onEditar={() => iniciarEdicao("custo", c)}
+                onMudarCampo={(campo, v) => setEditando((p) => ({ ...p, [campo]: v }))}
+                onSalvar={handleSalvarEdicao}
+                onCancelar={() => setEditando(null)}
+                onExcluir={() => handleExcluirGasto(c.id)}
+              />
             ))}
           </div>
         </div>
@@ -658,7 +913,7 @@ function StatusObra({ obra, onAlterar, salvando }) {
 // Componente principal — recebe obraId e usuarioId (vêm da sua autenticação,
 // ex: supabase.auth.getUser() ou de um contexto de sessão)
 // ---------------------------------------------------------------------------
-export default function DashboardMestreObras({ obraId, usuarioId }) {
+export default function DashboardMestreObras({ obraId, usuarioId, onVoltar }) {
   const { obra, etapas, fotos, carregando, erro } = useObraRealtime(obraId);
   const [etapaSelecionada, setEtapaSelecionada] = useState(null);
   const [salvandoEtapa, setSalvandoEtapa] = useState(false);
@@ -751,6 +1006,12 @@ export default function DashboardMestreObras({ obraId, usuarioId }) {
       />
 
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
+        <button
+          onClick={onVoltar}
+          className="flex items-center gap-1.5 text-xs text-[#8B8578] hover:text-[#EDEAE3] transition-colors mb-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F5B400]/50 rounded px-1 -ml-1"
+        >
+          <ArrowLeft size={14} /> Minhas obras
+        </button>
         <header className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-md bg-[#F5B400] flex items-center justify-center shrink-0">
