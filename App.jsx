@@ -75,10 +75,11 @@ export default function App() {
   }
 
   if (tela === "dashboard" && obraId) {
+    const voltarParaObras = () => { setObraId(null); setTela("obras"); };
     return usuario.tipo === "cliente" ? (
-      <DashboardCliente obraId={obraId} />
+      <DashboardCliente obraId={obraId} onVoltar={voltarParaObras} />
     ) : (
-      <DashboardMestreObras obraId={obraId} usuarioId={usuario.id} />
+      <DashboardMestreObras obraId={obraId} usuarioId={usuario.id} onVoltar={voltarParaObras} />
     );
   }
 
