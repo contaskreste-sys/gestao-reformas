@@ -9,6 +9,9 @@ import {
   AlertTriangle,
   FileCheck2,
   Star,
+  Video,
+  ArrowLeft,
+  X,
 } from "lucide-react";
 import { supabase, useObraRealtime } from "./supabase-obras";
 
@@ -92,11 +95,66 @@ function TrenaProgresso({ percent, etapas }) {
 }
 
 // ---------------------------------------------------------------------------
-// Feed de fotos — somente leitura
+// Visualizador ampliado (lightbox), igual ao do dashboard do mestre de obras
+// ---------------------------------------------------------------------------
+function Lightbox({ item, onClose }) {
+  if (!item) return null;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={onClose}>
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 text-[#EDEAE3] hover:text-[#F5B400] transition-colors"
+        aria-label="Fechar"
+      >
+        <X size={26} />
+      </button>
+      <div className="max-w-3xl w-full" onClick={(e) => e.stopPropagation()}>
+        {item.tipo === "video" ? (
+          <video src={item.url} controls autoPlay className="w-full max-h-[80vh] rounded-lg" />
+        ) : (
+          <img src={item.url} alt={item.descricao} className="w-full max-h-[80vh] object-contain rounded-lg" />
+        )}
+        <p className="text-sm text-[#EDEAE3] mt-3">{item.descricao}</p>
+        <p className="text-xs text-[#8B8578] font-[JetBrains_Mono]">
+          {new Date(item.data_upload).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" })}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function agruparPorData(itens) {
+  const grupos = [];
+  let grupoAtual = null;
+  itens.forEach((item) => {
+    const chave = new Date(item.data_upload).toLocaleDateString("pt-BR");
+    if (!grupoAtual || grupoAtual.chave !== chave) {
+      grupoAtual = {
+        chave,
+        label: new Date(item.data_upload).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" }),
+        itens: [],
+      };
+      grupos.push(grupoAtual);
+    }
+    grupoAtual.itens.push(item);
+  });
+  return grupos;
+}
+
+// ---------------------------------------------------------------------------
+// Feed de fotos e vídeos — somente leitura, com abas, agrupado por data
 // ---------------------------------------------------------------------------
 function FeedFotos({ fotos }) {
+  const [aba, setAba] = useState("foto");
+  const [ampliado, setAmpliado] = useState(null);
+
+  const itensDaAba = fotos.filter((f) => (f.tipo || "foto") === aba);
+  const grupos = agruparPorData(itensDaAba);
+
   return (
     <div className="bg-[#211F1A] border border-[#3A372E] rounded-lg p-5 h-full">
+      <Lightbox item={ampliado} onClose={() => setAmpliado(null)} />
+
       <div className="flex items-center justify-between mb-4">
         <div>
           <p className="text-[11px] tracking-[0.25em] uppercase text-[#8B8578] font-medium">
@@ -107,20 +165,58 @@ function FeedFotos({ fotos }) {
         <Camera size={20} className="text-[#F5B400]" />
       </div>
 
-      {fotos.length === 0 ? (
+      <div className="grid grid-cols-2 gap-1 bg-[#161510] rounded-md p-1 mb-4">
+        <button
+          onClick={() => setAba("foto")}
+          className={`flex items-center justify-center gap-1.5 text-xs font-medium py-2 rounded-sm transition-colors ${
+            aba === "foto" ? "bg-[#F5B400] text-[#161510]" : "text-[#8B8578]"
+          }`}
+        >
+          <Camera size={13} /> Fotos
+        </button>
+        <button
+          onClick={() => setAba("video")}
+          className={`flex items-center justify-center gap-1.5 text-xs font-medium py-2 rounded-sm transition-colors ${
+            aba === "video" ? "bg-[#F5B400] text-[#161510]" : "text-[#8B8578]"
+          }`}
+        >
+          <Video size={13} /> Vídeos
+        </button>
+      </div>
+
+      {grupos.length === 0 ? (
         <p className="text-xs text-[#8B8578] py-6 text-center">
-          A equipe ainda não postou fotos desta obra.
+          {aba === "video" ? "A equipe ainda não postou vídeos desta obra." : "A equipe ainda não postou fotos desta obra."}
         </p>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {fotos.map((f) => (
-            <div key={f.id} className="relative aspect-square rounded-md overflow-hidden border border-[#3A372E]">
-              <img src={f.url} alt={f.descricao} className="w-full h-full object-cover" />
-              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-2 pt-4">
-                <p className="text-[10px] text-[#EDEAE3] font-medium leading-tight truncate">{f.descricao}</p>
-                <p className="text-[9px] text-[#EDEAE3]/60 font-[JetBrains_Mono]">
-                  {new Date(f.data_upload).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}
-                </p>
+        <div className="space-y-4 max-h-[520px] overflow-y-auto pr-1">
+          {grupos.map((grupo) => (
+            <div key={grupo.chave}>
+              <p className="text-[10px] uppercase tracking-wide text-[#8B8578] mb-2 capitalize">{grupo.label}</p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {grupo.itens.map((f) => (
+                  <div
+                    key={f.id}
+                    className="relative aspect-square rounded-md overflow-hidden border border-[#3A372E] cursor-pointer"
+                    onClick={() => setAmpliado(f)}
+                  >
+                    {f.tipo === "video" ? (
+                      <video src={f.url} className="w-full h-full object-cover" muted />
+                    ) : (
+                      <img src={f.url} alt={f.descricao} className="w-full h-full object-cover" />
+                    )}
+                    {f.tipo === "video" && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                        <div className="w-8 h-8 rounded-full bg-black/50 flex items-center justify-center">
+                          <Video size={14} className="text-white" />
+                        </div>
+                      </div>
+                    )}
+                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-2 pt-4">
+                      <p className="text-[10px] text-[#EDEAE3] font-medium leading-tight truncate">{f.descricao}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
@@ -404,7 +500,7 @@ function CardAvaliacao({ obraId }) {
 // ---------------------------------------------------------------------------
 // Componente principal
 // ---------------------------------------------------------------------------
-export default function DashboardCliente({ obraId }) {
+export default function DashboardCliente({ obraId, onVoltar }) {
   const { obra, etapas, fotos, carregando, erro } = useObraRealtime(obraId);
 
   if (carregando) {
@@ -443,6 +539,12 @@ export default function DashboardCliente({ obraId }) {
       />
 
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6">
+        <button
+          onClick={onVoltar}
+          className="flex items-center gap-1.5 text-xs text-[#8B8578] hover:text-[#EDEAE3] transition-colors mb-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F5B400]/50 rounded px-1 -ml-1"
+        >
+          <ArrowLeft size={14} /> Minhas obras
+        </button>
         <header className="flex items-center justify-between mb-6">
           <div>
             <h1 className="font-[Oswald] text-lg sm:text-xl text-[#EDEAE3] leading-tight">{obra.nome}</h1>
