@@ -20,6 +20,8 @@ import {
   ArrowLeft,
   Pencil,
   Check,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import {
   useObraRealtime,
@@ -34,6 +36,11 @@ import {
   excluirFotoProgresso,
   atualizarItemOrcamento,
   atualizarCusto,
+  excluirItemOrcamento,
+  adicionarTarefa,
+  alternarTarefa,
+  atualizarTarefa,
+  excluirTarefa,
   supabase,
 } from "./supabase-obras";
 
@@ -45,7 +52,21 @@ function formatBRL(v) {
 // Barra "trena" — agora dirigida pelos dados reais (obra.progresso_percent
 // e etapas.percentual vindos do useObraRealtime)
 // ---------------------------------------------------------------------------
-function TrenaProgresso({ percent, etapas, onEditarEtapa, onExcluirEtapa, onAdicionarEtapa, adicionando }) {
+function TrenaProgresso({
+  percent,
+  etapas,
+  tarefas,
+  expandidas,
+  onToggleExpandir,
+  onEditarEtapa,
+  onExcluirEtapa,
+  onAdicionarEtapa,
+  adicionando,
+  onAdicionarTarefa,
+  onAlternarTarefa,
+  onEditarTarefa,
+  onExcluirTarefa,
+}) {
   const ticks = Array.from({ length: 21 }, (_, i) => i * 5);
   const etapaAtual = etapas.find((e) => e.percentual > 0 && e.percentual < 100) ?? etapas[0];
 
@@ -92,50 +113,195 @@ function TrenaProgresso({ percent, etapas, onEditarEtapa, onExcluirEtapa, onAdic
         </div>
       </div>
 
-      {/* Etapas — clique para atualizar o percentual (grava no Supabase) */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
+      {/* Etapas — cada uma expande pra mostrar/editar as subtarefas */}
+      <div className="mt-4 space-y-2">
         {etapas.map((e) => (
-          <div key={e.id} className="relative group">
-            <button
-              onClick={() => onEditarEtapa(e)}
-              className="w-full text-left bg-[#211F1A] border border-[#3A372E] rounded-md px-3 py-2 hover:border-[#F5B400]/50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F5B400]/50"
-            >
-              <div className="flex items-center gap-1.5 mb-1.5">
-                {e.percentual === 100 ? (
-                  <CheckCircle2 size={13} className="text-[#4A7C59] shrink-0" />
-                ) : (
-                  <Clock3 size={13} className="text-[#F5B400] shrink-0" />
-                )}
-                <span className="text-[11px] text-[#EDEAE3]/80 leading-tight pr-3">{e.nome}</span>
-              </div>
-              <div className="h-1 rounded-full bg-[#161510] overflow-hidden">
-                <div
-                  className={`h-full rounded-full ${e.percentual === 100 ? "bg-[#4A7C59]" : "bg-[#F5B400]"}`}
-                  style={{ width: `${e.percentual}%` }}
-                />
-              </div>
-            </button>
-            <button
-              onClick={(ev) => {
-                ev.stopPropagation();
-                if (window.confirm(`Excluir a etapa "${e.nome}"?`)) onExcluirEtapa(e.id);
-              }}
-              className="absolute top-1.5 right-1.5 text-[#8B8578] hover:text-[#F0793D] opacity-0 group-hover:opacity-100 transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F5B400]/50 rounded"
-              aria-label={`Excluir etapa ${e.nome}`}
-            >
-              <X size={13} />
-            </button>
-          </div>
+          <EtapaCard
+            key={e.id}
+            etapa={e}
+            tarefasDaEtapa={tarefas.filter((t) => t.etapa_id === e.id)}
+            expandida={expandidas.has(e.id)}
+            onToggleExpandir={() => onToggleExpandir(e.id)}
+            onEditarEtapa={() => onEditarEtapa(e)}
+            onExcluirEtapa={() => onExcluirEtapa(e.id)}
+            onAdicionarTarefa={(titulo) => onAdicionarTarefa(e, titulo)}
+            onAlternarTarefa={onAlternarTarefa}
+            onEditarTarefa={onEditarTarefa}
+            onExcluirTarefa={(tarefaId) => onExcluirTarefa(e, tarefaId)}
+          />
         ))}
         <button
           onClick={onAdicionarEtapa}
           disabled={adicionando}
-          className="flex items-center justify-center gap-1.5 border border-dashed border-[#3A372E] hover:border-[#F5B400]/50 text-[#8B8578] hover:text-[#F5B400] rounded-md px-3 py-2 text-[11px] font-medium transition-colors disabled:opacity-60"
+          className="w-full flex items-center justify-center gap-1.5 border border-dashed border-[#3A372E] hover:border-[#F5B400]/50 text-[#8B8578] hover:text-[#F5B400] rounded-md px-3 py-2.5 text-xs font-medium transition-colors disabled:opacity-60"
         >
           {adicionando ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
           Nova etapa
         </button>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Card de etapa expansível com a lista de subtarefas (checklist)
+// ---------------------------------------------------------------------------
+function EtapaCard({
+  etapa,
+  tarefasDaEtapa,
+  expandida,
+  onToggleExpandir,
+  onEditarEtapa,
+  onExcluirEtapa,
+  onAdicionarTarefa,
+  onAlternarTarefa,
+  onEditarTarefa,
+  onExcluirTarefa,
+}) {
+  const [novaTarefa, setNovaTarefa] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [editandoId, setEditandoId] = useState(null);
+  const [tituloEditado, setTituloEditado] = useState("");
+
+  async function handleAdicionar(e) {
+    e.preventDefault();
+    if (!novaTarefa.trim()) return;
+    setEnviando(true);
+    try {
+      await onAdicionarTarefa(novaTarefa.trim());
+      setNovaTarefa("");
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  function iniciarEdicao(t) {
+    setEditandoId(t.id);
+    setTituloEditado(t.titulo);
+  }
+
+  async function salvarEdicao(tarefaId) {
+    if (!tituloEditado.trim()) return;
+    await onEditarTarefa(tarefaId, { titulo: tituloEditado.trim() });
+    setEditandoId(null);
+  }
+
+  return (
+    <div className="bg-[#211F1A] border border-[#3A372E] rounded-md overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2.5 group">
+        <button onClick={onToggleExpandir} className="flex-1 flex items-center gap-2 text-left min-w-0">
+          {etapa.percentual === 100 ? (
+            <CheckCircle2 size={14} className="text-[#4A7C59] shrink-0" />
+          ) : (
+            <Clock3 size={14} className="text-[#F5B400] shrink-0" />
+          )}
+          <span className="text-sm text-[#EDEAE3]/90 truncate">{etapa.nome}</span>
+          {tarefasDaEtapa.length > 0 && (
+            <span className="text-[10px] text-[#8B8578] font-[JetBrains_Mono] shrink-0">
+              {tarefasDaEtapa.filter((t) => t.status === "concluida").length}/{tarefasDaEtapa.length}
+            </span>
+          )}
+        </button>
+        <span className="text-xs font-[JetBrains_Mono] text-[#8B8578] shrink-0">{etapa.percentual}%</span>
+        {tarefasDaEtapa.length === 0 && (
+          <button
+            onClick={onEditarEtapa}
+            className="text-[#8B8578] hover:text-[#F5B400] opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+            title="Editar percentual manualmente"
+          >
+            <Pencil size={12} />
+          </button>
+        )}
+        <button
+          onClick={() => { if (window.confirm(`Excluir a etapa "${etapa.nome}"?`)) onExcluirEtapa(); }}
+          className="text-[#8B8578] hover:text-[#F0793D] opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+          aria-label={`Excluir etapa ${etapa.nome}`}
+        >
+          <X size={13} />
+        </button>
+        <button onClick={onToggleExpandir} className="text-[#8B8578] shrink-0">
+          {expandida ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+        </button>
+      </div>
+
+      <div className="h-1 bg-[#161510]">
+        <div
+          className={`h-full ${etapa.percentual === 100 ? "bg-[#4A7C59]" : "bg-[#F5B400]"}`}
+          style={{ width: `${etapa.percentual}%` }}
+        />
+      </div>
+
+      {expandida && (
+        <div className="px-3 py-3 border-t border-[#3A372E] space-y-1.5">
+          {tarefasDaEtapa.length === 0 && (
+            <p className="text-[11px] text-[#8B8578] pb-1">
+              Sem subtarefas ainda. Adicione os passos dessa etapa (ex: preparar, lixar, pintar).
+            </p>
+          )}
+          {tarefasDaEtapa.map((t) => (
+            <div key={t.id} className="flex items-center gap-2 group/tarefa">
+              <button
+                onClick={() => onAlternarTarefa(t.id, t.status !== "concluida")}
+                className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors ${
+                  t.status === "concluida" ? "bg-[#4A7C59] border-[#4A7C59]" : "border-[#3A372E]"
+                }`}
+                aria-label="Marcar concluída"
+              >
+                {t.status === "concluida" && <Check size={11} className="text-[#161510]" />}
+              </button>
+
+              {editandoId === t.id ? (
+                <>
+                  <input
+                    autoFocus
+                    value={tituloEditado}
+                    onChange={(e) => setTituloEditado(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && salvarEdicao(t.id)}
+                    className="flex-1 bg-[#161510] border border-[#3A372E] rounded px-2 py-1 text-xs text-[#EDEAE3] focus:outline-none focus:ring-1 focus:ring-[#F5B400]/50"
+                  />
+                  <button onClick={() => salvarEdicao(t.id)} className="text-[#6FA87F] shrink-0"><Check size={13} /></button>
+                  <button onClick={() => setEditandoId(null)} className="text-[#8B8578] shrink-0"><X size={13} /></button>
+                </>
+              ) : (
+                <>
+                  <span className={`flex-1 text-xs truncate ${t.status === "concluida" ? "text-[#8B8578] line-through" : "text-[#EDEAE3]/85"}`}>
+                    {t.titulo}
+                  </span>
+                  <button
+                    onClick={() => iniciarEdicao(t)}
+                    className="text-[#8B8578] hover:text-[#F5B400] opacity-0 group-hover/tarefa:opacity-100 transition-opacity shrink-0"
+                  >
+                    <Pencil size={11} />
+                  </button>
+                  <button
+                    onClick={() => onExcluirTarefa(t.id)}
+                    className="text-[#8B8578] hover:text-[#F0793D] opacity-0 group-hover/tarefa:opacity-100 transition-opacity shrink-0"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+
+          <form onSubmit={handleAdicionar} className="flex gap-2 pt-1.5">
+            <input
+              value={novaTarefa}
+              onChange={(e) => setNovaTarefa(e.target.value)}
+              placeholder="Nova subtarefa (ex: Lixar)"
+              className="flex-1 bg-[#161510] border border-[#3A372E] rounded px-2 py-1.5 text-xs text-[#EDEAE3] placeholder:text-[#8B8578] focus:outline-none focus:ring-1 focus:ring-[#F5B400]/50"
+            />
+            <button
+              type="submit"
+              disabled={enviando}
+              className="text-[#8B8578] hover:text-[#F5B400] shrink-0 disabled:opacity-50"
+              aria-label="Adicionar subtarefa"
+            >
+              {enviando ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+            </button>
+          </form>
+        </div>
+      )}
     </div>
   );
 }
@@ -914,11 +1080,60 @@ function StatusObra({ obra, onAlterar, salvando }) {
 // ex: supabase.auth.getUser() ou de um contexto de sessão)
 // ---------------------------------------------------------------------------
 export default function DashboardMestreObras({ obraId, usuarioId, onVoltar }) {
-  const { obra, etapas, fotos, carregando, erro } = useObraRealtime(obraId);
+  const { obra, etapas, tarefas, fotos, carregando, erro } = useObraRealtime(obraId);
   const [etapaSelecionada, setEtapaSelecionada] = useState(null);
   const [salvandoEtapa, setSalvandoEtapa] = useState(false);
   const [salvandoStatus, setSalvandoStatus] = useState(false);
   const [adicionandoEtapa, setAdicionandoEtapa] = useState(false);
+  const [expandidas, setExpandidas] = useState(new Set());
+
+  function toggleExpandir(etapaId) {
+    setExpandidas((prev) => {
+      const novo = new Set(prev);
+      novo.has(etapaId) ? novo.delete(etapaId) : novo.add(etapaId);
+      return novo;
+    });
+  }
+
+  // Recalcula e salva o percentual da etapa com base numa lista de tarefas
+  // já atualizada (evita depender de esperar o realtime propagar o state).
+  async function recalcularPercentualPorTarefas(etapa, tarefasAtualizadas) {
+    const daEtapa = tarefasAtualizadas.filter((t) => t.etapa_id === etapa.id);
+    if (daEtapa.length === 0) return;
+    const concluidas = daEtapa.filter((t) => t.status === "concluida").length;
+    const novoPercentual = Math.round((concluidas / daEtapa.length) * 100);
+    if (novoPercentual !== etapa.percentual) {
+      await atualizarPercentualEtapa(etapa.id, novoPercentual);
+    }
+  }
+
+  async function handleAdicionarTarefa(etapa, titulo) {
+    const nova = await adicionarTarefa(etapa.id, titulo);
+    await recalcularPercentualPorTarefas(etapa, [...tarefas, nova]);
+  }
+
+  async function handleAlternarTarefa(tarefaId, concluida) {
+    const tarefa = tarefas.find((t) => t.id === tarefaId);
+    if (!tarefa) return;
+    await alternarTarefa(tarefaId, concluida);
+    const etapa = etapas.find((e) => e.id === tarefa.etapa_id);
+    if (!etapa) return;
+    const atualizadas = tarefas.map((t) =>
+      t.id === tarefaId ? { ...t, status: concluida ? "concluida" : "pendente" } : t
+    );
+    await recalcularPercentualPorTarefas(etapa, atualizadas);
+  }
+
+  async function handleEditarTarefa(tarefaId, campos) {
+    await atualizarTarefa(tarefaId, campos);
+  }
+
+  async function handleExcluirTarefa(etapa, tarefaId) {
+    if (!window.confirm("Excluir essa subtarefa?")) return;
+    await excluirTarefa(tarefaId);
+    const restantes = tarefas.filter((t) => t.id !== tarefaId);
+    await recalcularPercentualPorTarefas(etapa, restantes);
+  }
 
   async function handleExcluirEtapa(etapaId) {
     try {
@@ -1037,10 +1252,17 @@ export default function DashboardMestreObras({ obraId, usuarioId, onVoltar }) {
           <TrenaProgresso
             percent={obra.progresso_percent}
             etapas={etapas}
+            tarefas={tarefas}
+            expandidas={expandidas}
+            onToggleExpandir={toggleExpandir}
             onEditarEtapa={handleEditarEtapa}
             onExcluirEtapa={handleExcluirEtapa}
             onAdicionarEtapa={handleAdicionarEtapa}
             adicionando={adicionandoEtapa}
+            onAdicionarTarefa={handleAdicionarTarefa}
+            onAlternarTarefa={handleAlternarTarefa}
+            onEditarTarefa={handleEditarTarefa}
+            onExcluirTarefa={handleExcluirTarefa}
           />
         </section>
 
