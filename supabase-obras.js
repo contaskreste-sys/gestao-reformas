@@ -240,13 +240,59 @@ export async function excluirItemOrcamento(itemId) {
 }
 
 // ---------------------------------------------------------------------------
-// 17. Hook de tempo real — use no dashboard do CLIENTE (e do empreiteiro)
+// 18. Adicionar uma subtarefa a uma etapa (ex: "Lixar" dentro de "Pintura")
+// ---------------------------------------------------------------------------
+export async function adicionarTarefa(etapaId, titulo) {
+  const { data, error } = await supabase
+    .from("tarefas")
+    .insert({ etapa_id: etapaId, titulo, status: "pendente" })
+    .select()
+    .single();
+  if (error) throw new Error(`Falha ao adicionar tarefa: ${error.message}`);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// 19. Editar uma subtarefa (título e/ou status)
+// ---------------------------------------------------------------------------
+export async function atualizarTarefa(tarefaId, campos) {
+  const { data, error } = await supabase
+    .from("tarefas")
+    .update(campos)
+    .eq("id", tarefaId)
+    .select()
+    .single();
+  if (error) throw new Error(`Falha ao atualizar tarefa: ${error.message}`);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// 20. Alternar concluída/pendente com um toque só
+// ---------------------------------------------------------------------------
+export async function alternarTarefa(tarefaId, concluida) {
+  return atualizarTarefa(tarefaId, {
+    status: concluida ? "concluida" : "pendente",
+    data_conclusao: concluida ? new Date().toISOString().slice(0, 10) : null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 21. Excluir uma subtarefa
+// ---------------------------------------------------------------------------
+export async function excluirTarefa(tarefaId) {
+  const { error } = await supabase.from("tarefas").delete().eq("id", tarefaId);
+  if (error) throw new Error(`Falha ao excluir tarefa: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// 22. Hook de tempo real — use no dashboard do CLIENTE (e do empreiteiro)
 //    Escuta mudanças em `obras` (progresso geral) e `fotos_progresso`
 //    (novas fotos) e atualiza a tela sem precisar dar F5.
 // ---------------------------------------------------------------------------
 export function useObraRealtime(obraId) {
   const [obra, setObra] = useState(null);
   const [etapas, setEtapas] = useState([]);
+  const [tarefas, setTarefas] = useState([]);
   const [fotos, setFotos] = useState([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState(null);
@@ -270,12 +316,25 @@ export function useObraRealtime(obraId) {
           .order("data_upload", { ascending: false }),
       ]);
 
+      // tarefas dependem de já sabermos os ids das etapas (não têm obra_id
+      // direto), então busca depois de ter etapasData
+      let tarefasData = [];
+      if (etapasData?.length) {
+        const { data } = await supabase
+          .from("tarefas")
+          .select("*")
+          .in("etapa_id", etapasData.map((e) => e.id))
+          .order("criado_em", { ascending: true, nullsFirst: true });
+        tarefasData = data ?? [];
+      }
+
       if (!ativo) return;
       if (erroObra || erroEtapas || erroFotos) {
         setErro(erroObra?.message ?? erroEtapas?.message ?? erroFotos?.message);
       } else {
         setObra(obraData);
         setEtapas(etapasData ?? []);
+        setTarefas(tarefasData);
         setFotos(fotosData ?? []);
       }
       setCarregando(false);
@@ -314,6 +373,21 @@ export function useObraRealtime(obraId) {
       )
       .on(
         "postgres_changes",
+        { event: "INSERT", schema: "public", table: "tarefas" },
+        (payload) => setTarefas((prev) => (prev.some((t) => t.id === payload.new.id) ? prev : [...prev, payload.new]))
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "tarefas" },
+        (payload) => setTarefas((prev) => prev.map((t) => (t.id === payload.new.id ? payload.new : t)))
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "tarefas" },
+        (payload) => setTarefas((prev) => prev.filter((t) => t.id !== payload.old.id))
+      )
+      .on(
+        "postgres_changes",
         { event: "INSERT", schema: "public", table: "fotos_progresso", filter: `obra_id=eq.${obraId}` },
         (payload) => setFotos((prev) => [payload.new, ...prev])
       )
@@ -330,5 +404,5 @@ export function useObraRealtime(obraId) {
     };
   }, [obraId]);
 
-  return { obra, etapas, fotos, carregando, erro };
+  return { obra, etapas, tarefas, fotos, carregando, erro };
 }
